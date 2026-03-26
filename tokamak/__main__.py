@@ -33,7 +33,7 @@ from tokamak.visualization import (
 )
 from tokamak.diagnostics import (
     compute_fusion_performance, print_performance_report,
-    compute_energy_balance, plot_energy_balance,
+    plot_energy_balance,
 )
 
 
@@ -115,7 +115,6 @@ def main():
     print("━━━ PHASE 2b: Fusion Performance Diagnostics ━━━")
     with prof.phase("Fusion Diagnostics"):
         perf = compute_fusion_performance(fvm_data, cfg)
-        energy_balance = compute_energy_balance(fvm_data, cfg)
         print_performance_report(perf, cfg)
 
     # ── Step 3: PIC Particle Orbits ──

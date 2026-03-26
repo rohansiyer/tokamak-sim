@@ -6,12 +6,8 @@ All physics follows ITER-relevant formulas and NRL Plasma Formulary conventions.
 """
 
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
-from matplotlib.colors import LinearSegmentedColormap
-import matplotlib.patches as mpatches
 
 from tokamak.config import TokamakConfig
 from tokamak.equilibrium import (
@@ -19,32 +15,12 @@ from tokamak.equilibrium import (
     DT_reaction_rate, bremsstrahlung_loss, cyclotron_radiation_loss,
     B_toroidal, B_poloidal,
 )
+from tokamak.visualization import (
+    FACECOLOR, TICK_COL, LABEL_COL, TITLE_COL, SPINE_COL, _style_ax,
+)
 
-# ── Reuse visualization colour palette ──────────────────────────────────────
-FACECOLOR = '#0a0a14'
-TICK_COL  = '#667788'
-LABEL_COL = '#778899'
-TITLE_COL = '#ccddee'
-SPINE_COL = '#222840'
-
-energy_cmap = LinearSegmentedColormap.from_list('energy_green',
-    [(0, '#050e08'), (0.3, '#0a3a18'), (0.6, '#1a8a38'),
-     (0.85, '#55cc66'), (1.0, '#bbffcc')])
-
-lawson_cmap = LinearSegmentedColormap.from_list('lawson_hot',
-    [(0, '#0a0508'), (0.25, '#3a0a15'), (0.5, '#8a1a15'),
-     (0.75, '#dd4422'), (1.0, '#ffee88')])
-
-
-def _style_ax(ax, title='', xlabel='', ylabel=''):
-    ax.set_facecolor('#0e0e1a')
-    ax.set_title(title, fontsize=11, color=TITLE_COL, pad=10)
-    ax.set_xlabel(xlabel, fontsize=9, color=LABEL_COL)
-    ax.set_ylabel(ylabel, fontsize=9, color=LABEL_COL)
-    ax.tick_params(labelsize=7, colors=TICK_COL)
-    for s in ax.spines.values():
-        s.set_color(SPINE_COL)
-    ax.grid(True, alpha=0.1, color='#334466')
+# DT Lawson criterion threshold: nτ_E T > 3×10²¹ m⁻³ s keV
+LAWSON_THRESHOLD = 3.0e21
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -89,7 +65,6 @@ def compute_fusion_performance(fvm_data, cfg) -> dict:
     Ti   = fvm_data['Ti']
     Te   = fvm_data['Te']
     Nr   = len(rho)
-    dr   = rho[1] - rho[0] if Nr > 1 else 1.0 / cfg.Nr
 
     # ── Volume-integrated quantities ────────────────────────────────────────
     P_fusion_W   = 0.0   # total fusion power (alpha + neutron)
@@ -99,6 +74,7 @@ def compute_fusion_performance(fvm_data, cfg) -> dict:
     W_total_J    = 0.0   # stored plasma energy (3/2 ∫ p dV)
     mean_p       = 0.0   # volume-averaged pressure
     vol_total    = 0.0   # total plasma volume
+    n_avg        = 0.0   # volume-averaged density
 
     # DT fusion energy per event: E_fusion = E_alpha + E_neutron
     # E_alpha = 3.5 MeV, E_neutron = 14.1 MeV, total = 17.6 MeV
@@ -136,19 +112,11 @@ def compute_fusion_performance(fvm_data, cfg) -> dict:
         mean_p    += p_loc * dV
         vol_total += dV
 
+        # --- Volume-averaged density (accumulated in same pass) ---
+        n_avg += n_loc * dV
+
     mean_p /= max(vol_total, 1.0)
-
-    # ── External (non-alpha) heating power ──────────────────────────────────
-    # P_loss = P_alpha + P_external = W / tau_E  →  P_external = P_loss - P_alpha
-    # Use ITER H-mode scaling for tau_E to find P_loss, then back-calculate.
-    # First compute tau_E from the H98 scaling self-consistently.
-
-    # Volume-averaged density in 10^19 m^-3 for H98 scaling
-    n_avg = 0.0
-    for i in range(Nr):
-        dV = _vol_shell(max(rho[i], 0.001), cfg)
-        n_avg += n[i] * dV
-    n_avg /= max(vol_total, 1.0)
+    n_avg  /= max(vol_total, 1.0)
 
     n19 = n_avg / 1.0e19   # in units of 10^19 m^-3
 
@@ -201,8 +169,6 @@ def compute_fusion_performance(fvm_data, cfg) -> dict:
     T0_peak  = Ti[0]   # keV
     n_tau_T  = n0_peak * tau_E * T0_peak   # m^-3 s keV
 
-    # DT Lawson criterion threshold: n τ_E T > 3e21 m^-3 s keV
-    LAWSON_THRESHOLD = 3.0e21
     lawson_criterion_met = bool(n_tau_T > LAWSON_THRESHOLD)
 
     # ── Normalized beta β_N ──────────────────────────────────────────────
@@ -263,8 +229,6 @@ def print_performance_report(perf: dict, cfg):
     n0 = perf['n0_peak']
     T0 = perf['T0_avg_keV']
 
-    LAWSON_THRESHOLD = 3.0e21
-
     print("━━━ FUSION PERFORMANCE DIAGNOSTICS ━━━")
     print()
     print("  ── Power Balance ─────────────────────────────────────────")
@@ -321,12 +285,11 @@ def compute_energy_balance(fvm_data, cfg) -> dict:
     Te   = fvm_data['Te']
     Nr   = len(rho)
 
-    E_alpha_keV  = cfg.E_alpha
+    E_alpha_keV = cfg.E_alpha
 
-    P_alpha_W    = 0.0
-    P_brem_W     = 0.0
-    P_cyc_W      = 0.0
-    P_transport_W = 0.0
+    P_alpha_W = 0.0
+    P_brem_W  = 0.0
+    P_cyc_W   = 0.0
 
     for i in range(Nr):
         rr    = rho[i]
@@ -442,7 +405,6 @@ def plot_energy_balance(fvm_data, perf, cfg,
         at.set_color(TITLE_COL)
 
     # Add power values as a text box
-    total_in = P_a + P_oh
     info = (f"P_alpha  = {P_a:.1f} MW\n"
             f"P_ohmic  = {P_oh:.2f} MW\n"
             f"P_brem   = {P_br:.1f} MW\n"
@@ -469,9 +431,9 @@ def plot_energy_balance(fvm_data, perf, cfg,
     # nτT_min ~ (12 k T) / (<σv> E_alpha * tau_burn_factor)
     nτT_ignition = np.zeros_like(T_range)
     nτT_breakeven = np.zeros_like(T_range)
+    E_alpha_J = cfg.E_alpha * cfg.keV_to_J
     for k, Tk in enumerate(T_range):
         sv = DT_reaction_rate(Tk)
-        E_alpha_J = cfg.E_alpha * cfg.keV_to_J
         # Ignition: alpha heating equals confinement loss
         # nτ_E > 12 T_J / (<σv> E_alpha)  — classical ignition condition
         T_J = Tk * cfg.keV_to_J
@@ -489,7 +451,7 @@ def plot_energy_balance(fvm_data, perf, cfg,
                  linestyle='--', label='Break-even (Q=1)', alpha=0.8)
 
     # Flat Lawson threshold line
-    ax2.axhline(3.0e21, color='#ff4444', lw=1.0, linestyle=':',
+    ax2.axhline(LAWSON_THRESHOLD, color='#ff4444', lw=1.0, linestyle=':',
                 alpha=0.6, label='nτT = 3×10²¹ (approx.)')
 
     # Current operating point
@@ -540,7 +502,6 @@ def plot_energy_balance(fvm_data, perf, cfg,
     bar_colors  = []
     bar_heights = []
     bar_labels  = []
-    bar_qs      = [m[0] for m in milestones[1:]]
 
     for i in range(len(milestones) - 1):
         q_lo, col_lo, lbl_lo = milestones[i]
