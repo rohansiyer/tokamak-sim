@@ -69,7 +69,7 @@ def _shafranov_rho_eff(rho_val, theta_val, beta_p, cfg: TokamakConfig):
     return float(np.clip(rho_eff, 0.0, 0.999))
 
 
-def _compute_beta_p(n_2d, Ti_2d, rho, cfg: TokamakConfig):
+def _compute_beta_p(n_2d, Ti_2d, cfg: TokamakConfig):
     """
     Compute volume-averaged poloidal beta from current 2D profiles.
 
@@ -79,7 +79,6 @@ def _compute_beta_p(n_2d, Ti_2d, rho, cfg: TokamakConfig):
     n0_eff = float(np.mean(n_2d[0, :]))
     T0_eff = float(np.mean(Ti_2d[0, :]))
     p_axis = n0_eff * T0_eff * cfg.keV_to_J
-    # Poloidal field at edge
     Bp_edge = B_poloidal(0.95, cfg.a, cfg.R0, cfg.B0, cfg.Ip,
                          cfg.mu0, cfg.q0, cfg.qa)
     Bp_edge = max(Bp_edge, 0.01)
@@ -87,12 +86,46 @@ def _compute_beta_p(n_2d, Ti_2d, rho, cfg: TokamakConfig):
     return float(np.clip(beta_p, 0.0, 2.0))
 
 
+def _net_source_sink(n_loc, T_loc, B_loc, rho_i, cfg, dt):
+    """
+    Compute net temperature source and sink rates [keV/s] at a single cell.
+
+    Returns (source_rate, sink_rate), each non-negative, capped at 5% of
+    current T per time step.
+    """
+    Te_loc = 0.9 * T_loc
+
+    # Alpha heating
+    nD = 0.5 * n_loc
+    sv = DT_reaction_rate(T_loc)
+    P_alpha = nD * sv * cfg.E_alpha * cfg.keV_to_J * nD * 0.25
+    heating = P_alpha / (n_loc * cfg.keV_to_J)
+
+    # NBI heating (Gaussian deposition, uniform in theta)
+    heating += cfg.T0_i * 0.02 * np.exp(-rho_i**2 / 0.2)
+
+    # Radiation losses
+    P_brem = bremsstrahlung_loss(n_loc, Te_loc, cfg.Z_eff)
+    P_cyc  = cyclotron_radiation_loss(n_loc, Te_loc, B_loc)
+    cooling = (P_brem + P_cyc) / (n_loc * cfg.keV_to_J)
+
+    net = heating - cooling
+    if not np.isfinite(net):
+        net = 0.0
+
+    max_rate = 0.05 * T_loc / max(dt, 1e-10)
+    if net > 0.0:
+        return min(net, max_rate), 0.0
+    else:
+        return 0.0, min(abs(net), max_rate)
+
+
 # ═══════════════════════════════════════════════════════════════
-#  2D diffusion step
+#  2D diffusion step (vectorized)
 # ═══════════════════════════════════════════════════════════════
 
 def _fvm2d_step(n_2d, T_2d, chi_n_2d, chi_T_2d,
-                rho, theta, dr, dtheta, dt,
+                rho, dr, dtheta, dt,
                 source_n_2d, source_T_2d, sink_T_2d,
                 tau_p=0.5, tau_E=1.5):
     """
@@ -117,7 +150,6 @@ def _fvm2d_step(n_2d, T_2d, chi_n_2d, chi_T_2d,
     n_2d, T_2d : (Nr, Ntheta) arrays — current density and temperature
     chi_n_2d, chi_T_2d : (Nr, Ntheta) — diffusion coefficients
     rho : (Nr,) normalised radial grid
-    theta : (Ntheta,) poloidal angle grid
     dr, dtheta : grid spacings
     dt : time step
     source_n_2d, source_T_2d, sink_T_2d : (Nr, Ntheta) source/sink terms
@@ -127,71 +159,79 @@ def _fvm2d_step(n_2d, T_2d, chi_n_2d, chi_T_2d,
     -------
     n_new, T_new : (Nr, Ntheta)
     """
-    Nr, Ntheta = n_2d.shape
+    # Vectorized radial face weights: shape (Nr,) -> broadcast over theta axis
+    r  = np.maximum(rho, 0.001)[:, None]           # (Nr, 1)
+    rm = np.maximum(0.5 * (rho[:-1] + rho[1:]), 0.001)[:, None]   # (Nr-1, 1)
+    rp = rm                                         # rp[i] == rm[i] == midpoint
+
+    # ── Radial diffusion (interior rows 1..Nr-2) ──
+    # Face diffusivities
+    Dn_m = 0.5 * (chi_n_2d[:-1, :] + chi_n_2d[1:, :])   # (Nr-1, Ntheta)
+    Dn_p = Dn_m                                            # same staggering
+    DT_m = 0.5 * (chi_T_2d[:-1, :] + chi_T_2d[1:, :])
+    DT_p = DT_m
+
+    # Face fluxes (positive = outward)
+    flux_n_m = Dn_m * rm * (n_2d[1:, :] - n_2d[:-1, :]) / dr   # (Nr-1, Ntheta)
+    flux_n_p = flux_n_m                                           # same array, shifted index
+    flux_T_m = DT_m * rm * (T_2d[1:, :] - T_2d[:-1, :]) / dr
+    flux_T_p = flux_T_m
+
+    # Divergence at interior points i=1..Nr-2
+    # dn_rad[i] = (flux_p[i] - flux_m[i]) / (r[i] * dr)
+    #           = (flux_n_m[i] - flux_n_m[i-1]) / (r[i] * dr)
+    dn_rad = (flux_n_m[1:, :] - flux_n_m[:-1, :]) / (r[1:-1, :] * dr)  # (Nr-2, Ntheta)
+    dT_rad = (flux_T_m[1:, :] - flux_T_m[:-1, :]) / (r[1:-1, :] * dr)
+
+    # ── Poloidal diffusion (periodic in theta) ──
+    D_pol_n = 0.5 * chi_n_2d   # (Nr, Ntheta)
+    D_pol_T = 0.5 * chi_T_2d
+
+    # Periodic-shifted neighbours
+    n_jm = np.roll(n_2d, 1, axis=1)   # n[i, j-1]
+    n_jp = np.roll(n_2d, -1, axis=1)  # n[i, j+1]
+    T_jm = np.roll(T_2d, 1, axis=1)
+    T_jp = np.roll(T_2d, -1, axis=1)
+
+    D_pol_n_jm = np.roll(D_pol_n, 1, axis=1)
+    D_pol_n_jp = np.roll(D_pol_n, -1, axis=1)
+    D_pol_T_jm = np.roll(D_pol_T, 1, axis=1)
+    D_pol_T_jp = np.roll(D_pol_T, -1, axis=1)
+
+    D_face_n_m = 0.5 * (D_pol_n + D_pol_n_jm)
+    D_face_n_p = 0.5 * (D_pol_n + D_pol_n_jp)
+    D_face_T_m = 0.5 * (D_pol_T + D_pol_T_jm)
+    D_face_T_p = 0.5 * (D_pol_T + D_pol_T_jp)
+
+    flux_pol_n_m = D_face_n_m * (n_2d - n_jm) / dtheta
+    flux_pol_n_p = D_face_n_p * (n_jp - n_2d) / dtheta
+    flux_pol_T_m = D_face_T_m * (T_2d - T_jm) / dtheta
+    flux_pol_T_p = D_face_T_p * (T_jp - T_2d) / dtheta
+
+    r2 = r**2   # (Nr, 1)
+    dn_pol = (flux_pol_n_p - flux_pol_n_m) / (r2 * dtheta)  # (Nr, Ntheta)
+    dT_pol = (flux_pol_T_p - flux_pol_T_m) / (r2 * dtheta)
+
+    # ── Update interior rows ──
     n_new = n_2d.copy()
     T_new = T_2d.copy()
 
-    for i in range(1, Nr - 1):
-        r = max(rho[i], 0.001)
-        rm = 0.5 * (rho[i-1] + rho[i])
-        rp = 0.5 * (rho[i]   + rho[i+1])
+    n_new[1:-1, :] = (n_2d[1:-1, :]
+                      + dt * dn_rad
+                      + dt * dn_pol[1:-1, :]
+                      + dt * source_n_2d[1:-1, :]
+                      - dt * n_2d[1:-1, :] / tau_p)
 
-        for j in range(Ntheta):
-            # Periodic neighbours in theta
-            jm = (j - 1) % Ntheta
-            jp = (j + 1) % Ntheta
+    T_new[1:-1, :] = (T_2d[1:-1, :]
+                      + dt * dT_rad
+                      + dt * dT_pol[1:-1, :]
+                      + dt * source_T_2d[1:-1, :]
+                      - dt * sink_T_2d[1:-1, :]
+                      - dt * T_2d[1:-1, :] / tau_E)
 
-            # ── Radial diffusion terms ──
-            Dn_m = 0.5 * (chi_n_2d[i-1, j] + chi_n_2d[i, j])
-            Dn_p = 0.5 * (chi_n_2d[i,   j] + chi_n_2d[i+1, j])
-            flux_n_m = Dn_m * rm * (n_2d[i, j]   - n_2d[i-1, j]) / dr
-            flux_n_p = Dn_p * rp * (n_2d[i+1, j] - n_2d[i,   j]) / dr
-            dn_rad = (flux_n_p - flux_n_m) / (r * dr)
-
-            DT_m = 0.5 * (chi_T_2d[i-1, j] + chi_T_2d[i, j])
-            DT_p = 0.5 * (chi_T_2d[i,   j] + chi_T_2d[i+1, j])
-            flux_T_m = DT_m * rm * (T_2d[i, j]   - T_2d[i-1, j]) / dr
-            flux_T_p = DT_p * rp * (T_2d[i+1, j] - T_2d[i,   j]) / dr
-            dT_rad = (flux_T_p - flux_T_m) / (r * dr)
-
-            # ── Poloidal diffusion terms (1/r^2 d/dtheta(D d/dtheta)) ──
-            # Use poloidal diffusion coefficient ~ chi_n / q^2 (reduced transport
-            # along field lines in high-q region, enhanced near axis where
-            # parallel transport smooths out poloidal asymmetries quickly)
-            D_pol_n = 0.5 * chi_n_2d[i, j]   # poloidal diffusivity
-            D_pol_T = 0.5 * chi_T_2d[i, j]
-
-            # Average with neighbours for face values
-            D_pol_n_m = 0.5 * (D_pol_n + 0.5 * chi_n_2d[i, jm])
-            D_pol_n_p = 0.5 * (D_pol_n + 0.5 * chi_n_2d[i, jp])
-            D_pol_T_m = 0.5 * (D_pol_T + 0.5 * chi_T_2d[i, jm])
-            D_pol_T_p = 0.5 * (D_pol_T + 0.5 * chi_T_2d[i, jp])
-
-            flux_pol_n_m = D_pol_n_m * (n_2d[i, j]  - n_2d[i, jm]) / dtheta
-            flux_pol_n_p = D_pol_n_p * (n_2d[i, jp] - n_2d[i, j])  / dtheta
-            dn_pol = (flux_pol_n_p - flux_pol_n_m) / (r**2 * dtheta)
-
-            flux_pol_T_m = D_pol_T_m * (T_2d[i, j]  - T_2d[i, jm]) / dtheta
-            flux_pol_T_p = D_pol_T_p * (T_2d[i, jp] - T_2d[i, j])  / dtheta
-            dT_pol = (flux_pol_T_p - flux_pol_T_m) / (r**2 * dtheta)
-
-            # ── Update ──
-            n_new[i, j] = (n_2d[i, j]
-                           + dt * dn_rad
-                           + dt * dn_pol
-                           + dt * source_n_2d[i, j]
-                           - dt * n_2d[i, j] / tau_p)
-
-            T_new[i, j] = (T_2d[i, j]
-                           + dt * dT_rad
-                           + dt * dT_pol
-                           + dt * source_T_2d[i, j]
-                           - dt * sink_T_2d[i, j]
-                           - dt * T_2d[i, j] / tau_E)
-
-            # Physical bounds
-            n_new[i, j] = min(max(n_new[i, j], 1e16), 1e22)
-            T_new[i, j] = min(max(T_new[i, j], 0.01), 200.0)
+    # Physical bounds
+    n_new[1:-1, :] = np.clip(n_new[1:-1, :], 1e16, 1e22)
+    T_new[1:-1, :] = np.clip(T_new[1:-1, :], 0.01, 200.0)
 
     # ── Boundary conditions ──
     # Core (Neumann): copy inner ring
@@ -224,9 +264,9 @@ def run_fvm2d_transport(cfg: TokamakConfig, gs_data=None):
     cfg : TokamakConfig
         Tokamak configuration parameters.
     gs_data : dict or None
-        Grad-Shafranov equilibrium data (optional).  If provided, the flux
-        surface geometry is used to initialise profiles; otherwise analytic
-        profiles are used.
+        Grad-Shafranov equilibrium data (optional).  Reserved for future
+        use; analytic profiles with Shafranov-shift correction are used
+        regardless.
 
     Returns
     -------
@@ -248,37 +288,25 @@ def run_fvm2d_transport(cfg: TokamakConfig, gs_data=None):
 
     RHO, THETA = np.meshgrid(rho, theta, indexing='ij')  # (Nr, Ntheta)
 
-    # ── Estimate poloidal beta for Shafranov shift ──
-    # Use simple analytic estimate initially; updated each saved step
-    n0_est = cfg.n0
-    T0_est = cfg.T0_i
-    p_axis = n0_est * T0_est * cfg.keV_to_J
+    # ── Estimate initial poloidal beta for Shafranov shift ──
+    # Use analytic on-axis values; consistent with _compute_beta_p formula.
     Bp_edge = B_poloidal(0.95, cfg.a, cfg.R0, cfg.B0, cfg.Ip,
                          cfg.mu0, cfg.q0, cfg.qa)
     Bp_edge = max(Bp_edge, 0.01)
-    beta_p_init = float(np.clip(p_axis / (Bp_edge**2 / (2.0 * cfg.mu0)),
+    p_axis_init = cfg.n0 * cfg.T0_i * cfg.keV_to_J
+    beta_p_init = float(np.clip(p_axis_init / (Bp_edge**2 / (2.0 * cfg.mu0)),
                                 0.0, 2.0))
 
     # ── Initialise 2D profiles ──
     print("  [FVM2D] Building 2D initial profiles with Shafranov shift...")
     n_2d  = np.zeros((Nr, Ntheta))
     Ti_2d = np.zeros((Nr, Ntheta))
-    Te_2d = np.zeros((Nr, Ntheta))
 
     for i in range(Nr):
         for j in range(Ntheta):
-            rho_eff = _shafranov_rho_eff(rho[i], theta[j],
-                                          beta_p_init, cfg)
-            if gs_data is not None:
-                # Use GS flux surface geometry: map psi -> rho_eff via
-                # linear interpolation of the normalised flux
-                # (GS provides psi_axis, psi_lcfs; here we use the analytic
-                # profile but shifted by the GS-computed Shafranov shift
-                # which is encoded in the psi array if available)
-                pass  # analytic profiles below are sufficient
+            rho_eff = _shafranov_rho_eff(rho[i], theta[j], beta_p_init, cfg)
             n_2d[i, j]  = density_profile(rho_eff, cfg.n0, cfg.alpha_n)
             Ti_2d[i, j] = temperature_profile(rho_eff, cfg.T0_i, cfg.alpha_T)
-            Te_2d[i, j] = temperature_profile(rho_eff, cfg.T0_e, cfg.alpha_T)
 
     # ── 2D transport coefficients ──
     print("  [FVM2D] Computing 2D transport coefficients...")
@@ -314,24 +342,25 @@ def run_fvm2d_transport(cfg: TokamakConfig, gs_data=None):
             chi_n_2d[i, j] = D_neo + D_anom
             chi_T_2d[i, j] = 3.0 * chi_n_2d[i, j]
 
+    # ── Precompute grid-fixed quantities used every step ──
+    # B_2d only depends on the fixed geometry, not on evolving n/T.
+    B_2d = np.vectorize(_local_B)(RHO, THETA, cfg)  # (Nr, Ntheta)
+
+    # NBI source: theta-independent, time-independent — precompute once
+    nbi_heat_1d = cfg.T0_i * 0.02 * np.exp(-rho**2 / 0.2)  # (Nr,)
+    nbi_heat_2d = np.broadcast_to(nbi_heat_1d[:, None], (Nr, Ntheta))
+
     # ── Particle fueling source (NBI-like, peaked near axis, uniform in theta) ──
     source_n_2d = np.zeros((Nr, Ntheta))
     for i in range(Nr):
-        s_val = cfg.n0 * 1e-3 * np.exp(-rho[i]**2 / 0.15)
-        source_n_2d[i, :] = s_val
+        source_n_2d[i, :] = cfg.n0 * 1e-3 * np.exp(-rho[i]**2 / 0.15)
 
-    # ── CFL-limited diffusion coefficients ──
+    # ── CFL-limited diffusion ──
     # Radial CFL: D_max_r = 0.4 * dr^2 / dt
     # Poloidal CFL: D_max_pol = 0.4 * (dr * dtheta)^2 / dt  (conservative)
-    chi_max_r   = 0.4 * dr**2 / dt
-    chi_max_pol = 0.4 * (dr * dtheta)**2 / dt
-    chi_max_cfl = min(chi_max_r, chi_max_pol)
-
+    chi_max_cfl = min(0.4 * dr**2 / dt,
+                      0.4 * (dr * dtheta)**2 / dt)
     print(f"  [FVM2D] CFL limit: D_max = {chi_max_cfl:.3e} m²/s")
-
-    # Apply CFL cap at initialisation (reapplied each step)
-    chi_n_cfl = np.minimum(chi_n_2d, chi_max_cfl)
-    chi_T_cfl = np.minimum(chi_T_2d, chi_max_cfl)
 
     # ── Time integration ──
     print(f"  [FVM2D] Running {Nt} steps "
@@ -350,45 +379,23 @@ def run_fvm2d_transport(cfg: TokamakConfig, gs_data=None):
 
         for i in range(1, Nr - 1):
             for j in range(Ntheta):
-                B_loc  = _local_B(rho[i], theta[j], cfg)
                 n_loc  = float(np.clip(n_2d[i, j],  1e16, 1e22))
                 T_loc  = float(np.clip(Ti_2d[i, j], 0.01, 200.0))
-                Te_loc = 0.9 * T_loc
+                # Use precomputed B_2d; add precomputed NBI term via helper
+                src, snk = _net_source_sink(n_loc, T_loc, B_2d[i, j],
+                                            rho[i], cfg, dt)
+                # NBI already included inside _net_source_sink
+                source_T_2d[i, j] = src
+                sink_T_2d[i, j]   = snk
 
-                # Alpha heating
-                nD = 0.5 * n_loc
-                sv = DT_reaction_rate(T_loc)
-                P_alpha = nD * sv * cfg.E_alpha * cfg.keV_to_J * nD * 0.25
-                heating = P_alpha / (n_loc * cfg.keV_to_J)
-
-                # NBI heating (Gaussian deposition, uniform in theta)
-                heating += cfg.T0_i * 0.02 * np.exp(-rho[i]**2 / 0.2)
-
-                # Radiation losses
-                P_brem = bremsstrahlung_loss(n_loc, Te_loc, cfg.Z_eff)
-                P_cyc  = cyclotron_radiation_loss(n_loc, Te_loc, B_loc)
-                cooling = (P_brem + P_cyc) / (n_loc * cfg.keV_to_J)
-
-                net = heating - cooling
-                if not np.isfinite(net):
-                    net = 0.0
-
-                # Cap rate at 5 % of current T per step
-                max_rate = 0.05 * T_loc / max(dt, 1e-10)
-                if net > 0.0:
-                    source_T_2d[i, j] = min(net, max_rate)
-                else:
-                    sink_T_2d[i, j]   = min(abs(net), max_rate)
-
-        # ── Apply CFL cap ──
+        # ── Apply CFL cap and advance one step ──
         chi_n_step = np.minimum(chi_n_2d, chi_max_cfl)
         chi_T_step = np.minimum(chi_T_2d, chi_max_cfl)
 
-        # ── Advance one step ──
         n_2d, Ti_2d = _fvm2d_step(
             n_2d, Ti_2d,
             chi_n_step, chi_T_step,
-            rho, theta, dr, dtheta, dt,
+            rho, dr, dtheta, dt,
             source_n_2d, source_T_2d, sink_T_2d,
         )
 
@@ -416,7 +423,7 @@ def run_fvm2d_transport(cfg: TokamakConfig, gs_data=None):
     Ti_1d = np.mean(Ti_2d, axis=1)
     Te_1d = np.mean(Te_2d, axis=1)
 
-    # ── Radially-averaged 1D transport coefficients ──
+    # ── Theta-averaged 1D transport coefficients ──
     D_cl_1d   = np.mean(D_cl_2d,   axis=1)
     D_neo_1d  = np.mean(D_neo_2d,  axis=1)
     D_anom_1d = np.mean(D_anom_2d, axis=1)
@@ -428,9 +435,9 @@ def run_fvm2d_transport(cfg: TokamakConfig, gs_data=None):
     B_1d = np.array([B_toroidal(cfg.R0 + cfg.a * r, cfg.B0, cfg.R0)
                      for r in rho])
 
-    # Alpha heating and radiation profiles (on theta-averaged quantities)
-    P_alpha_1d = np.zeros(Nr)
-    P_rad_1d   = np.zeros(Nr)
+    # ── Alpha heating and radiation on theta-averaged quantities ──
+    P_alpha_1d  = np.zeros(Nr)
+    P_rad_1d    = np.zeros(Nr)
     source_T_1d = np.zeros(Nr)
     sink_T_1d   = np.zeros(Nr)
 
@@ -448,16 +455,9 @@ def run_fvm2d_transport(cfg: TokamakConfig, gs_data=None):
         P_cyc  = cyclotron_radiation_loss(n_loc, Te_loc, B_loc)
         P_rad_1d[i] = P_brem + P_cyc
 
-        heating = P_alpha_1d[i] / max(n_loc * cfg.keV_to_J, 1e-30)
-        cooling = P_rad_1d[i]   / max(n_loc * cfg.keV_to_J, 1e-30)
-        net = heating - cooling
-        if not np.isfinite(net):
-            net = 0.0
-        max_rate = 0.05 * T_loc / max(dt, 1e-10)
-        if net > 0.0:
-            source_T_1d[i] = min(net, max_rate)
-        else:
-            sink_T_1d[i]   = min(abs(net), max_rate)
+        src, snk = _net_source_sink(n_loc, T_loc, B_loc, rho[i], cfg, dt)
+        source_T_1d[i] = src
+        sink_T_1d[i]   = snk
 
     # ── Impurity density ──
     n_z = np.array([impurity_profile(r, cfg.n0, cfg.Z_imp) * cfg.n0 * 0.02
@@ -467,21 +467,19 @@ def run_fvm2d_transport(cfg: TokamakConfig, gs_data=None):
     n_hist_arr = np.array(n_hist_list)   # (Nt_saved, Nr)
     T_hist_arr = np.array(T_hist_list)   # (Nt_saved, Nr)
 
-    # ── Diagnostics ──
-    P_fus_total = 0.0
-    for i in range(Nr):
-        P_a     = alpha_heating_power(rho[i], n_1d[i], Ti_1d[i],
-                                      cfg.E_alpha, cfg.keV_to_J)
-        vol_sh  = (2.0 * np.pi * cfg.R0
-                   * 2.0 * np.pi * cfg.a**2 * rho[i] * dr)
-        P_fus_total += P_a * 5.0 * vol_sh
+    # ── Diagnostics: fuse P_fus and W into a single loop ──
+    vol_shells = (2.0 * np.pi * cfg.R0
+                  * 2.0 * np.pi * cfg.a**2 * rho * dr)  # (Nr,)
 
-    W_total = 0.0
+    P_fus_total = 0.0
+    W_total     = 0.0
     for i in range(Nr):
-        p_loc  = n_1d[i] * (Ti_1d[i] + Te_1d[i]) * cfg.keV_to_J
-        vol_sh = (2.0 * np.pi * cfg.R0
-                  * 2.0 * np.pi * cfg.a**2 * rho[i] * dr)
-        W_total += 1.5 * p_loc * vol_sh
+        P_a = alpha_heating_power(rho[i], n_1d[i], Ti_1d[i],
+                                  cfg.E_alpha, cfg.keV_to_J)
+        P_fus_total += P_a * 5.0 * vol_shells[i]
+
+        p_loc = n_1d[i] * (Ti_1d[i] + Te_1d[i]) * cfg.keV_to_J
+        W_total += 1.5 * p_loc * vol_shells[i]
 
     P_heat = max(P_fus_total / 5.0, 1e3)
     tau_E  = W_total / P_heat
