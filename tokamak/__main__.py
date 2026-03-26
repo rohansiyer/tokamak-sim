@@ -31,6 +31,10 @@ from tokamak.visualization import (
     plot_radial_profiles, plot_particle_orbits,
     plot_multiple_toroidal_sections, plot_transport_hierarchy,
 )
+from tokamak.diagnostics import (
+    compute_fusion_performance, print_performance_report,
+    compute_energy_balance, plot_energy_balance,
+)
 
 
 def main():
@@ -107,6 +111,13 @@ def main():
                                            dr, dtheta, cfg)
     print()
 
+    # ── Step 2b: Fusion Performance Diagnostics ──
+    print("━━━ PHASE 2b: Fusion Performance Diagnostics ━━━")
+    with prof.phase("Fusion Diagnostics"):
+        perf = compute_fusion_performance(fvm_data, cfg)
+        energy_balance = compute_energy_balance(fvm_data, cfg)
+        print_performance_report(perf, cfg)
+
     # ── Step 3: PIC Particle Orbits ──
     print("━━━ PHASE 3: Particle-In-Cell Orbit Integration ━━━")
     print(f"  [PIC] Initializing {cfg.Nparticles:,} guiding-center particles...")
@@ -159,6 +170,7 @@ def main():
             plot_multiple_toroidal_sections(fvm_data, cfg,
                                             '05_toroidal_sections.png')
             plot_transport_hierarchy(fvm_data, cfg, '06_transport_hierarchy.png')
+            plot_energy_balance(fvm_data, perf, cfg, '07_energy_balance.png')
 
     # ── Profiling Report ──
     if not args.no_profile:
