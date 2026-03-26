@@ -21,6 +21,7 @@ class TokamakConfig:
     q0 = 1.0              # Central safety factor
     qa = 4.5              # Edge safety factor
     N_TF = 18             # Number of TF coils (for ripple)
+    ripple_amplitude = 0.001  # Peak TF ripple amplitude delta_max (dimensionless)
 
     # ── Plasma ──
     n0     = 1.0e20       # Central density [m⁻³]

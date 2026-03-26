@@ -87,6 +87,25 @@ def ripple_field(r, R0, phi_i, N_TF, ripple_amplitude):
     return delta
 
 
+@njit(cache=True)
+def _ripple_field_and_dphi(r, R0, phi_i, N_TF, ripple_amplitude):
+    """
+    Return both delta(r, phi) and d_delta/d_phi in a single call, evaluating
+    the shared radial envelope exp(-N_TF * (r/R0)^N_TF) only once.
+
+    Returns
+    -------
+    delta      : ripple perturbation (dimensionless)
+    ddelta_dphi: d_delta/d_phi = -ripple_amplitude * N_TF * sin(N_TF*phi) * envelope
+    """
+    x = min(r / R0, 0.9)
+    envelope = np.exp(-N_TF * x**N_TF)
+    angle = N_TF * phi_i
+    delta = ripple_amplitude * np.cos(angle) * envelope
+    ddelta_dphi = -ripple_amplitude * N_TF * np.sin(angle) * envelope
+    return delta, ddelta_dphi
+
+
 # ═══════════════════════════════════════════════════════════════
 #  RK4 guiding-center orbit integrator (CPU via Numba)
 # ═══════════════════════════════════════════════════════════════
@@ -118,7 +137,6 @@ def _gc_derivatives(rho_i, theta_i, phi_i, v_par_i, mu_i,
 
     # Magnetic field (axisymmetric equilibrium)
     Bt = B0 * R0 / R
-    q  = q0 + (qa - q0) * rho_i**2
     # Bp from enclosed current
     I_enc = Ip * rho_i**2
     Bp = mu0 * I_enc / (2.0 * np.pi * max(r, 1e-6))
@@ -127,7 +145,9 @@ def _gc_derivatives(rho_i, theta_i, phi_i, v_par_i, mu_i,
     # ── TF coil ripple perturbation ──
     # δ(r, φ) modifies the local field magnitude:  B_local = B_eq * (1 + δ)
     # The ripple is small (|δ| << 1) and does not alter the equilibrium.
-    delta = ripple_field(r, R0, phi_i, N_TF, ripple_amplitude)
+    # d_delta/d_phi fetched from same call; avoids recomputing the radial
+    # envelope exp(-N_TF*(r/R0)^N_TF) a second time for the mirror-force term.
+    delta, ddelta_dphi = _ripple_field_and_dphi(r, R0, phi_i, N_TF, ripple_amplitude)
     B_mag = B_eq * (1.0 + delta)
 
     # v_perp from μ conservation at the ripple-modified local |B|
@@ -179,9 +199,8 @@ def _gc_derivatives(rho_i, theta_i, phi_i, v_par_i, mu_i,
     #                                     * exp(-N_TF*(r/R0)^N_TF)
     # The factor (v_par / R) converts the toroidal gradient to a rate of change
     # along the field line (ds = R dφ along the toroidal direction).
-    x_clamped = min(r / R0, 0.9)
-    ddelta_dphi = (-ripple_amplitude * N_TF * np.sin(N_TF * phi_i)
-                   * np.exp(-N_TF * x_clamped**N_TF))
+    # ddelta_dphi obtained above via _ripple_field_and_dphi (shared radial
+    # envelope); 1/R converts toroidal gradient to d/ds along field line.
     dB_ripple_ds = B_eq * ddelta_dphi / R  # ∂B/∂s along toroidal direction
     dv_par_ripple = -mu_i / mi * dB_ripple_ds
 
@@ -268,16 +287,18 @@ def pic_push_particles(rho, theta, phi, v_par, v_perp, mu,
                 dv_coll = np.sqrt(nu_D * dt) * v_par[i] * np.random.randn() * 0.01
                 v_par[i] += dv_coll
 
-            # Update v_perp from μ conservation
+            # Update v_perp from μ conservation at the ripple-modified |B|
+            # (consistent with B_mag used inside _gc_derivatives)
             R_loc = R0 + a * rho[i] * np.cos(theta[i])
             R_loc = max(R_loc, 0.5)
             Bt = B0 * R0 / R_loc
-            q  = q0 + (qa - q0) * rho[i]**2
             r_loc = rho[i] * a
             I_enc = Ip * rho[i]**2
             Bp = mu0 * I_enc / (2.0 * np.pi * max(r_loc, 1e-6))
-            B_mag = np.sqrt(Bt**2 + Bp**2)
-            v_perp[i] = np.sqrt(max(2.0 * mu[i] * B_mag / mi, 0.0))
+            B_eq_loc = np.sqrt(Bt**2 + Bp**2)
+            delta_loc = ripple_field(r_loc, R0, phi[i], N_TF, ripple_amplitude)
+            B_mag_loc = B_eq_loc * (1.0 + delta_loc)
+            v_perp[i] = np.sqrt(max(2.0 * mu[i] * B_mag_loc / mi, 0.0))
 
             # Reflecting boundary conditions
             if rho[i] < 0.001:
