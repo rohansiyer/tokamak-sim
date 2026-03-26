@@ -32,19 +32,6 @@ from scipy.sparse.linalg import spsolve
 #  Soloviev analytic profiles  (linear in ψ  →  exact GS solution exists)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _soloviev_rhs(R, Z, R0, A, C):
-    """
-    RHS of GS for the Soloviev family:
-        -μ₀ R² p'(ψ) - F F'(ψ) = A R² + C
-    where A and C are constants chosen to match Ip and B0.
-
-    This is the standard Soloviev source term — it is linear in ψ (but does
-    *not* depend on ψ directly here; it is expressed as a function of R, Z
-    through the Soloviev exact solution's implicit ψ field).
-    """
-    return A * R**2 + C
-
-
 def _soloviev_analytic(R, Z, R0, a, kappa, delta_tri, B0, mu0, Ip):
     """
     Compute the Soloviev analytic flux function.
@@ -62,9 +49,7 @@ def _soloviev_analytic(R, Z, R0, a, kappa, delta_tri, B0, mu0, Ip):
     # Elongation and triangularity parameters after Cerfon & Freidberg (2010)
     # Phys. Plasmas 17, 112502, Eq.(9)-(16)
     eps = a / R0           # inverse aspect ratio
-    N1 = -(1.0 + np.arcsin(delta_tri))**2 / (eps * kappa**2)
-    N2 =  (1.0 - np.arcsin(delta_tri))**2 / (eps * kappa**2)
-    N3 = -kappa / (eps * np.cos(np.arcsin(delta_tri))**2)
+    N1 = -(1.0 + np.arcsin(delta_tri))**2 / (eps * kappa**2)  # noqa: F841 (kept for reference)
 
     # Basis functions ψ_1 … ψ_4  (Cerfon & Freidberg Eq.(7))
     x = R / R0   # normalised major radius
@@ -82,10 +67,10 @@ def _soloviev_analytic(R, Z, R0, a, kappa, delta_tri, B0, mu0, Ip):
 
     # Boundary conditions: the LCFS passes through the three points
     #   P1 = (R0+a,  0)        outer equatorial point
-    #   P2 = (R0-a,  0)        inner equatorial point   [not used separately]
+    #   P2 = (R0-a,  0)        inner equatorial point
     #   P3 = (R0-δa, +κa)      upper X-point / top
-    # and two curvature conditions at P1, P3 expressing kappa and delta.
-    # This is the 3-unknown system (c2, c3, c4) with c1 = 1 fixed.
+    # and the curvature condition at P1 expressing kappa.
+    # This is the 4-unknown system (c1,c2,c3,c4) solved by 4 BCs.
 
     def eval_basis(R_, Z_):
         x_ = R_ / R0
@@ -117,35 +102,15 @@ def _soloviev_analytic(R, Z, R0, a, kappa, delta_tri, B0, mu0, Ip):
         ddp = 0.0
         return dd1, dd2, dd3, dd4, ddp
 
-    def ddRR_basis(R_, Z_=0.0):
-        """∂²ψ_i/∂R²  (for triangularity BC at the top point)."""
-        x_ = R_ / R0
-        dR1 = 0.0
-        dR2 = 2.0 / R0**2
-        dR3 = (3.0 * np.log(x_) + 2.0 - (Z_ / R0)**2 * 0) / R0**2 + 2.0 * np.log(x_) / R0**2
-        # d/dR = (1/R0) d/dx;  d²/dR² = (1/R0²) d²/dx²
-        # ψ3 = x²ln(x) - (Z/R0)²  →  d/dx = 2x ln(x)+x  →  d²/dx² = 2ln(x)+3
-        dR3 = (2.0 * np.log(x_) + 3.0) / R0**2
-        # ψ4 = x⁴ - 4x²(Z/R0)²  →  d/dx = 4x³-8x(Z/R0)²  →  d²/dx² = 12x²-8(Z/R0)²
-        dR4 = (12.0 * x_**2 - 8.0 * (Z_ / R0)**2) / R0**2
-        dRp = (12.0 * R_**2) / 8.0  # = 3R²/2
-        return dR1, dR2, dR3, dR4, dRp
-
     dz1_1, dz2_1, dz3_1, dz4_1, dzp_1 = ddzz_basis(R1)
-    dz1_3, dz2_3, dz3_3, dz4_3, dzp_3 = ddzz_basis(R3, kappa * a)
-    dR1_3, dR2_3, dR3_3, dR4_3, dRp_3 = ddRR_basis(R3, Z3)
 
-    # System:  M * [c2, c3, c4] = rhs   (c1=1 is fixed by overall scale)
+    # System:  M * [c1, c2, c3, c4] = rhs
     #
     # BC1:  ψ(R1, 0) = 0  →  c1 b1_1 + c2 b2_1 + c3 b3_1 + c4 b4_1 + bp_1 = 0
     # BC2:  ψ(R2, 0) = 0  →  (same with R2)
     # BC3:  ψ(R3, Z3) = 0
-    # BC4:  ∂²ψ/∂Z²(R1,0) + N1 ψ(R1,0) = 0  →  ∂²ψ/∂Z² = 0  (since ψ=0 there)
+    # BC4:  ∂²ψ/∂Z²(R1,0) = 0  (elongation curvature BC, since ψ=0 there)
     #        so  c1 dz1_1 + c2 dz2_1 + c3 dz3_1 + c4 dz4_1 + dzp_1 = 0
-    # BC5:  ∂²ψ/∂R²(R3,Z3) + N3 ψ(R3,Z3) = 0  →  same
-
-    # Use 4 equations: BC1, BC2, BC3, BC4  (4 unknowns: c1,c2,c3,c4)
-    # Fix normalisation later; solve the 4x4 system.
     M = np.array([
         [b1_1,  b2_1,  b3_1,  b4_1 ],
         [b1_2,  b2_2,  b3_2,  b4_2 ],
@@ -320,20 +285,23 @@ def _compute_q_profile(psi_2d, R_2d, Z_2d, R_1d, Z_1d,
     psi_vals = np.linspace(psi_axis, psi_lcfs, Nr_q + 2)[1:-1]
     q_vals   = np.zeros(Nr_q)
 
+    # Pre-compute loop-invariant quantities
+    dpsi_band = 0.5 * abs(psi_lcfs - psi_axis) / Nr_q
+    integrand = 1.0 / (R_2d**2 * np.sqrt(grad_psi_sq))
+    scale = (F0 / (2.0 * np.pi)) * dR * dZ / (dpsi_band * 2.0)
+
     for idx, psi_s in enumerate(psi_vals):
         # Integrate F / (R² |∇ψ|) dA  over the annulus dψ thick
         # q = F/(2π) * ∮ dl/|∇ψ| / R²
         # We use the area-integration form:  q = (F/2π) * ∫∫ δ(ψ-ψ_s)/(R² |∇ψ|) dR dZ
-        # Approximated by counting cells with |ψ - ψ_s| < 0.5*(ψ_lcfs-ψ_axis)/Nr_q
-        dpsi_band = 0.5 * abs(psi_lcfs - psi_axis) / Nr_q
+        # Approximated by counting cells with |ψ - ψ_s| < dpsi_band
         mask = np.abs(psi_2d - psi_s) < dpsi_band
         if mask.sum() < 4:
             q_vals[idx] = np.nan
             continue
 
-        integrand = 1.0 / (R_2d**2 * np.sqrt(grad_psi_sq))
         # Weight by 1/|∇ψ| to approximate dl
-        q_vals[idx] = (F0 / (2.0 * np.pi)) * np.sum(integrand[mask]) * dR * dZ / (dpsi_band * 2.0)
+        q_vals[idx] = scale * np.sum(integrand[mask])
 
     # Fill NaN with linear interpolation
     valid = np.isfinite(q_vals)
@@ -447,12 +415,10 @@ def solve_gs(cfg):
     # The axis is roughly at (R0, 0); the boundary value is ψ at (R0+a, 0)
     i_axis = np.argmin(np.abs(R_1d - R0))
     j_axis = len(Z_1d) // 2
-    psi_axis_init = psi_old[i_axis, j_axis]
 
     # LCFS: value at the outer equatorial point
     i_edge = np.argmin(np.abs(R_1d - (R0 + a)))
-    j_edge = len(Z_1d) // 2
-    psi_lcfs_val = psi_old[i_edge, j_edge]
+    psi_lcfs_val = psi_old[i_edge, j_axis]
 
     # Normalise so that ψ_lcfs = 0  (Dirichlet BC at boundary)
     psi_old = psi_old - psi_lcfs_val
@@ -469,6 +435,7 @@ def solve_gs(cfg):
     omega       = 0.7      # under-relaxation factor (improves stability)
     converged   = False
     n_iter      = 0
+    rel_change  = 1.0      # initialise before loop for use in warning message
 
     # F0 = R0 * B0  (value on axis)
     F0 = R0 * B0
@@ -503,11 +470,6 @@ def solve_gs(cfg):
         psi_new[-1,  :] = 0.0
         psi_new[:,  0 ] = 0.0
         psi_new[:, -1 ] = 0.0
-
-        # Normalise: shift so that ψ = 0 on the LCFS boundary
-        # The "LCFS" in this formulation is the boundary of the domain,
-        # already at ψ=0 by Dirichlet. But re-centre on axis position:
-        psi_axis_new = psi_new[i_axis, j_axis]
 
         # Under-relaxed update
         psi_blended = omega * psi_new + (1.0 - omega) * psi_old
