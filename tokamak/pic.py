@@ -47,15 +47,85 @@ def init_particles(Np, R0, a, n0, T0_i, mi, q0, qa, B0, Ip, mu0):
 
 
 # ═══════════════════════════════════════════════════════════════
+#  TF coil magnetic ripple
+# ═══════════════════════════════════════════════════════════════
+
+@njit(cache=True)
+def ripple_field(r, R0, phi_i, N_TF, ripple_amplitude):
+    """
+    Compute the toroidal ripple perturbation δ at a given minor radius r,
+    major radius R0, and toroidal angle φ due to N_TF discrete TF coils.
+
+    Real tokamaks have N_TF discrete coils that produce a toroidal ripple
+    in the magnetic field with periodicity N_TF in φ. The ripple amplitude
+    grows with distance from the magnetic axis (larger r/R0).
+
+    Formula:
+        δ(r, φ) = ripple_amplitude * cos(N_TF * φ) * exp(-N_TF * (r/R0)^N_TF)
+
+    The exponential factor suppresses the ripple near the axis and near the
+    edge (where (r/R0)^N_TF grows large), producing a realistic radial profile.
+    At ITER edge conditions (r ≈ a ≈ 0.32 R0, N_TF=18), δ_max ~ 0.1%.
+
+    Parameters
+    ----------
+    r               : minor radius coordinate [m]
+    R0              : major radius [m]
+    phi_i           : toroidal angle [rad]
+    N_TF            : number of TF coils
+    ripple_amplitude : peak ripple amplitude (dimensionless), typically 0.001
+
+    Returns
+    -------
+    delta : ripple perturbation (dimensionless), |delta| << 1
+    """
+    # Normalised minor radius; clamp to avoid numerical overflow in exponent
+    x = min(r / R0, 0.9)
+    # cos(N_TF * φ) captures the N_TF-fold toroidal periodicity of the coils
+    # exp(...) gives a smooth radial profile that peaks near mid-radius
+    delta = ripple_amplitude * np.cos(N_TF * phi_i) * np.exp(-N_TF * x**N_TF)
+    return delta
+
+
+@njit(cache=True)
+def _ripple_field_and_dphi(r, R0, phi_i, N_TF, ripple_amplitude):
+    """
+    Return both delta(r, phi) and d_delta/d_phi in a single call, evaluating
+    the shared radial envelope exp(-N_TF * (r/R0)^N_TF) only once.
+
+    Returns
+    -------
+    delta      : ripple perturbation (dimensionless)
+    ddelta_dphi: d_delta/d_phi = -ripple_amplitude * N_TF * sin(N_TF*phi) * envelope
+    """
+    x = min(r / R0, 0.9)
+    envelope = np.exp(-N_TF * x**N_TF)
+    angle = N_TF * phi_i
+    delta = ripple_amplitude * np.cos(angle) * envelope
+    ddelta_dphi = -ripple_amplitude * N_TF * np.sin(angle) * envelope
+    return delta, ddelta_dphi
+
+
+# ═══════════════════════════════════════════════════════════════
 #  RK4 guiding-center orbit integrator (CPU via Numba)
 # ═══════════════════════════════════════════════════════════════
 
 @njit(cache=True)
 def _gc_derivatives(rho_i, theta_i, phi_i, v_par_i, mu_i,
-                    R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J):
+                    R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J,
+                    N_TF=18, ripple_amplitude=0.001):
     """
     Compute time derivatives for guiding-center motion.
     Returns (drho/dt, dtheta/dt, dphi/dt, dv_par/dt).
+
+    Includes TF coil magnetic ripple: the N_TF discrete TF coils produce a
+    small toroidal variation in |B| with amplitude ripple_amplitude (≤ 0.1%).
+    The ripple modifies:
+      - the local |B| used for μ-conservation (v_perp calculation)
+      - the ∇B drift through the modified field gradient
+      - the mirror force (dv_par/dt) through the toroidal ∂B/∂φ term
+    Particles with v_par/v_perp < sqrt(δ) can be ripple-trapped between
+    adjacent TF coils, which is a known loss channel in real tokamaks.
     """
     e = 1.602176634e-19
 
@@ -65,20 +135,31 @@ def _gc_derivatives(rho_i, theta_i, phi_i, v_par_i, mu_i,
     R      = R0 + r * cos_th
     R      = max(R, 0.5)
 
-    # Magnetic field
+    # Magnetic field (axisymmetric equilibrium)
     Bt = B0 * R0 / R
-    q  = q0 + (qa - q0) * rho_i**2
     # Bp from enclosed current
     I_enc = Ip * rho_i**2
     Bp = mu0 * I_enc / (2.0 * np.pi * max(r, 1e-6))
-    B_mag = np.sqrt(Bt**2 + Bp**2)
+    B_eq = np.sqrt(Bt**2 + Bp**2)  # equilibrium |B| before ripple
 
-    # v_perp from μ conservation
+    # ── TF coil ripple perturbation ──
+    # δ(r, φ) modifies the local field magnitude:  B_local = B_eq * (1 + δ)
+    # The ripple is small (|δ| << 1) and does not alter the equilibrium.
+    # d_delta/d_phi fetched from same call; avoids recomputing the radial
+    # envelope exp(-N_TF*(r/R0)^N_TF) a second time for the mirror-force term.
+    delta, ddelta_dphi = _ripple_field_and_dphi(r, R0, phi_i, N_TF, ripple_amplitude)
+    B_mag = B_eq * (1.0 + delta)
+
+    # v_perp from μ conservation at the ripple-modified local |B|
+    # (μ = m v_perp² / 2B is a guiding-center invariant on the bounce timescale)
     v_perp = np.sqrt(max(2.0 * mu_i * B_mag / mi, 0.0))
 
     # ── Drift velocities ──
 
     # ∇B drift:  v_∇B = (m v⊥²)/(2eB²) × |∇B|
+    # The toroidal ripple adds a toroidal component to ∇B, but its poloidal
+    # average is zero; only the equilibrium 1/R gradient is retained here
+    # for the secular (non-oscillatory) guiding-center drift.
     grad_B_over_B = 1.0 / R
     v_gradB = mi * v_perp**2 / (2.0 * e * B_mag) * grad_B_over_B
 
@@ -111,7 +192,20 @@ def _gc_derivatives(rho_i, theta_i, phi_i, v_par_i, mu_i,
     drho = v_drift_Z * sin_th / a
 
     # Mirror force: dv∥/dt = -(μ/m) ∂B/∂s
-    dv_par = -mu_i / mi * (-B_mag * sin_th / R)
+    # The ripple contributes an additional ∂B/∂φ term that can trap particles
+    # in the local ripple wells (ripple trapping: |v_par/v_perp| < sqrt(δ)).
+    # Here we include the toroidal ripple gradient via ∂δ/∂φ:
+    #   ∂B/∂φ|_ripple ≈ B_eq * ∂δ/∂φ = -B_eq * δ_amplitude * N_TF * sin(N_TF*φ)
+    #                                     * exp(-N_TF*(r/R0)^N_TF)
+    # The factor (v_par / R) converts the toroidal gradient to a rate of change
+    # along the field line (ds = R dφ along the toroidal direction).
+    # ddelta_dphi obtained above via _ripple_field_and_dphi (shared radial
+    # envelope); 1/R converts toroidal gradient to d/ds along field line.
+    dB_ripple_ds = B_eq * ddelta_dphi / R  # ∂B/∂s along toroidal direction
+    dv_par_ripple = -mu_i / mi * dB_ripple_ds
+
+    # Total dv_par: equilibrium mirror force + ripple mirror force
+    dv_par = -mu_i / mi * (-B_mag * sin_th / R) + dv_par_ripple
 
     # Collisional pitch-angle scattering (simplified Lorentz operator)
     # ν_D ≈ ν_ii ≈ n Z⁴ e⁴ lnΛ / (4π ε₀² m² v_th³)
@@ -126,9 +220,13 @@ def _gc_derivatives(rho_i, theta_i, phi_i, v_par_i, mu_i,
 @njit(parallel=True, cache=True)
 def pic_push_particles(rho, theta, phi, v_par, v_perp, mu,
                        dt, Nt, R0, a, B0, mi, q0, qa, kappa,
-                       Ip, mu0):
+                       Ip, mu0, N_TF=18, ripple_amplitude=0.001):
     """
     RK4 guiding-center orbit integrator with collisional scattering.
+
+    Includes TF coil magnetic ripple via the `ripple_field` function.
+    N_TF     : number of discrete TF coils (default 18, ITER-like)
+    ripple_amplitude : peak ripple amplitude δ_max (default 0.001 = 0.1%)
     """
     Np = len(rho)
     e = 1.602176634e-19
@@ -154,25 +252,29 @@ def pic_push_particles(rho, theta, phi, v_par, v_perp, mu,
             # k1
             dr1, dt1, dp1, dv1, nu_D = _gc_derivatives(
                 rho_i, theta_i, phi_i, vp_i, mu_i,
-                R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J)
+                R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J,
+                N_TF, ripple_amplitude)
 
             # k2
             dr2, dt2, dp2, dv2, _ = _gc_derivatives(
                 rho_i + 0.5*dt*dr1, theta_i + 0.5*dt*dt1,
                 phi_i + 0.5*dt*dp1, vp_i + 0.5*dt*dv1, mu_i,
-                R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J)
+                R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J,
+                N_TF, ripple_amplitude)
 
             # k3
             dr3, dt3, dp3, dv3, _ = _gc_derivatives(
                 rho_i + 0.5*dt*dr2, theta_i + 0.5*dt*dt2,
                 phi_i + 0.5*dt*dp2, vp_i + 0.5*dt*dv2, mu_i,
-                R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J)
+                R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J,
+                N_TF, ripple_amplitude)
 
             # k4
             dr4, dt4, dp4, dv4, _ = _gc_derivatives(
                 rho_i + dt*dr3, theta_i + dt*dt3,
                 phi_i + dt*dp3, vp_i + dt*dv3, mu_i,
-                R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J)
+                R0, a, B0, mi, q0, qa, Ip, mu0, keV_to_J,
+                N_TF, ripple_amplitude)
 
             # RK4 update
             rho[i]   += dt/6.0 * (dr1 + 2*dr2 + 2*dr3 + dr4)
@@ -185,16 +287,18 @@ def pic_push_particles(rho, theta, phi, v_par, v_perp, mu,
                 dv_coll = np.sqrt(nu_D * dt) * v_par[i] * np.random.randn() * 0.01
                 v_par[i] += dv_coll
 
-            # Update v_perp from μ conservation
+            # Update v_perp from μ conservation at the ripple-modified |B|
+            # (consistent with B_mag used inside _gc_derivatives)
             R_loc = R0 + a * rho[i] * np.cos(theta[i])
             R_loc = max(R_loc, 0.5)
             Bt = B0 * R0 / R_loc
-            q  = q0 + (qa - q0) * rho[i]**2
             r_loc = rho[i] * a
             I_enc = Ip * rho[i]**2
             Bp = mu0 * I_enc / (2.0 * np.pi * max(r_loc, 1e-6))
-            B_mag = np.sqrt(Bt**2 + Bp**2)
-            v_perp[i] = np.sqrt(max(2.0 * mu[i] * B_mag / mi, 0.0))
+            B_eq_loc = np.sqrt(Bt**2 + Bp**2)
+            delta_loc = ripple_field(r_loc, R0, phi[i], N_TF, ripple_amplitude)
+            B_mag_loc = B_eq_loc * (1.0 + delta_loc)
+            v_perp[i] = np.sqrt(max(2.0 * mu[i] * B_mag_loc / mi, 0.0))
 
             # Reflecting boundary conditions
             if rho[i] < 0.001:

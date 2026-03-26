@@ -122,7 +122,8 @@ def main():
             pic_push_particles(rho_p, theta_p, phi_p, vpar, vperp, mu_p,
                                cfg.dt, cfg.Nt_pic, cfg.R0, cfg.a, cfg.B0,
                                cfg.mi, cfg.q0, cfg.qa, cfg.kappa,
-                               cfg.Ip, cfg.mu0)
+                               cfg.Ip, cfg.mu0,
+                               N_TF=cfg.N_TF, ripple_amplitude=cfg.ripple_amplitude)
     print(f"  [PIC] Complete.")
     print()
 
