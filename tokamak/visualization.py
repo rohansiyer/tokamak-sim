@@ -8,6 +8,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 from matplotlib.colors import LinearSegmentedColormap
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 – registers 3D projection
 
 from tokamak.config import TokamakConfig
 from tokamak.grids import poloidal_to_RZ
@@ -57,6 +58,107 @@ def _style_ax(ax, title='', xlabel='', ylabel=''):
     for s in ax.spines.values():
         s.set_color(SPINE_COL)
     ax.grid(True, alpha=0.1, color='#334466')
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Torus orientation inset helper
+# ═══════════════════════════════════════════════════════════════
+
+def _add_torus_orientation_inset(fig, mode):
+    """Add a small 3D wireframe torus inset showing the geometric slice.
+
+    Parameters
+    ----------
+    fig  : matplotlib Figure
+    mode : 'poloidal' | 'midplane' | 'toroidal'
+    """
+    # Scaled-down torus dimensions to maintain R0/a ratio (6.2/2.0)
+    R0_d = 1.0
+    a_d  = 0.32
+
+    # Build wireframe torus surface
+    u = np.linspace(0, 2 * np.pi, 40)   # toroidal
+    v = np.linspace(0, 2 * np.pi, 20)   # poloidal
+    U, V = np.meshgrid(u, v)
+    X_t = (R0_d + a_d * np.cos(V)) * np.cos(U)
+    Y_t = (R0_d + a_d * np.cos(V)) * np.sin(U)
+    Z_t =  a_d * np.sin(V)
+
+    # Inset axes – placed at bottom-right, not overlapping main content
+    ax3d = fig.add_axes([0.78, 0.02, 0.20, 0.20], projection='3d')
+
+    # Dark background matching figure
+    ax3d.set_facecolor('#0a0a0a')
+    ax3d.patch.set_alpha(0.0)
+    for pane in (ax3d.xaxis.pane, ax3d.yaxis.pane, ax3d.zaxis.pane):
+        pane.fill = False
+        pane.set_edgecolor('none')
+
+    # Wireframe torus
+    ax3d.plot_wireframe(X_t, Y_t, Z_t,
+                        rstride=2, cstride=2,
+                        color='#888888', alpha=0.25, linewidth=0.5)
+
+    # Highlighted cut geometry
+    if mode == 'poloidal':
+        # Cross-section circle at phi=0 (R-Z plane)
+        v_c = np.linspace(0, 2 * np.pi, 60)
+        xc = (R0_d + a_d * np.cos(v_c)) * 1.0   # cos(0)=1
+        yc = np.zeros_like(v_c)
+        zc = a_d * np.sin(v_c)
+        ax3d.plot(xc, yc, zc, color='#FF6600', linewidth=2.0, zorder=5)
+        # Fill the cross-section plane lightly
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        verts = [list(zip(xc, yc, zc))]
+        poly = Poly3DCollection(verts, alpha=0.20, facecolor='#FF6600',
+                                edgecolor='none')
+        ax3d.add_collection3d(poly)
+        label_text = 'Poloidal\nslice'
+
+    elif mode == 'midplane':
+        # Flat ring at Z=0 (midplane, X-Y plane)
+        phi_r = np.linspace(0, 2 * np.pi, 120)
+        # Outer and inner edges of the torus footprint
+        r_out = R0_d + a_d
+        r_in  = R0_d - a_d
+        x_out = r_out * np.cos(phi_r)
+        y_out = r_out * np.sin(phi_r)
+        x_in  = r_in  * np.cos(phi_r[::-1])
+        y_in  = r_in  * np.sin(phi_r[::-1])
+        x_ring = np.concatenate([x_out, x_in])
+        y_ring = np.concatenate([y_out, y_in])
+        z_ring = np.zeros_like(x_ring)
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        verts = [list(zip(x_ring, y_ring, z_ring))]
+        poly = Poly3DCollection(verts, alpha=0.30, facecolor='#FF6600',
+                                edgecolor='#FF6600', linewidth=0.5)
+        ax3d.add_collection3d(poly)
+        label_text = 'Midplane\ncut'
+
+    elif mode == 'toroidal':
+        # 8 thin vertical planes at equally-spaced toroidal angles
+        phi_cuts = np.linspace(0, 2 * np.pi, 8, endpoint=False)
+        v_c = np.linspace(0, 2 * np.pi, 30)
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        for ph in phi_cuts:
+            xc = (R0_d + a_d * np.cos(v_c)) * np.cos(ph)
+            yc = (R0_d + a_d * np.cos(v_c)) * np.sin(ph)
+            zc = a_d * np.sin(v_c)
+            ax3d.plot(xc, yc, zc, color='#FF6600', linewidth=1.5, alpha=0.85)
+        label_text = 'Toroidal\ncuts'
+
+    # Minimal styling
+    ax3d.set_axis_off()
+    ax3d.view_init(elev=25, azim=-60)
+    lim = R0_d + a_d + 0.05
+    ax3d.set_xlim(-lim, lim)
+    ax3d.set_ylim(-lim, lim)
+    ax3d.set_zlim(-lim * 0.5, lim * 0.5)
+
+    # Text label
+    fig.text(0.88, 0.02, label_text,
+             ha='center', va='bottom', fontsize=7,
+             color='white', alpha=0.85)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -143,6 +245,7 @@ def plot_poloidal_contours(fvm_data, phi_2d, j_phi, j_bs, cfg, filename):
         ax.tick_params(labelsize=7, colors=TICK_COL)
         for s in ax.spines.values(): s.set_color(SPINE_COL)
 
+    _add_torus_orientation_inset(fig, 'poloidal')
     fig.savefig(filename, dpi=180, facecolor=fig.get_facecolor(),
                 edgecolor='none', bbox_inches='tight')
     plt.close(fig)
@@ -227,6 +330,7 @@ def plot_axial_contours(fvm_data, cfg, filename):
         ax.tick_params(labelsize=7, colors=TICK_COL)
         for s in ax.spines.values(): s.set_color(SPINE_COL)
 
+    _add_torus_orientation_inset(fig, 'midplane')
     fig.savefig(filename, dpi=180, facecolor=fig.get_facecolor(),
                 edgecolor='none', bbox_inches='tight')
     plt.close(fig)
@@ -482,6 +586,7 @@ def plot_multiple_toroidal_sections(fvm_data, cfg, filename):
 
     plt.subplots_adjust(left=0.04, right=0.96, top=0.90, bottom=0.04,
                         hspace=0.22, wspace=0.18)
+    _add_torus_orientation_inset(fig, 'toroidal')
     fig.savefig(filename, dpi=180, facecolor=fig.get_facecolor(),
                 edgecolor='none', bbox_inches='tight')
     plt.close(fig)
