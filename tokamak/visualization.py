@@ -102,18 +102,18 @@ def plot_poloidal_contours(fvm_data, phi_2d, j_phi, j_bs, cfg, filename):
             phi_plot[i,j] = phi_2d[min(i,pnr-1), min(j,pnt-1)]
 
     fig = plt.figure(figsize=(22, 15), facecolor=FACECOLOR)
-    fig.suptitle('SECCIONES POLOIDALES — Contornos de Equilibrio y Transporte',
+    fig.suptitle('POLOIDAL SECTIONS — Equilibrium and Transport Contours',
                  fontsize=16, color='white', fontweight='300', y=0.98)
     gs = GridSpec(2, 3, figure=fig, hspace=0.28, wspace=0.25,
                   left=0.06, right=0.94, top=0.92, bottom=0.06)
 
     panels = [
-        (n_2d/1e20, 'Densidad  n [10²⁰ m⁻³]', density_cmap, 20),
-        (T_2d,      'Temperatura  Tᵢ [keV]',   temp_cmap,    20),
-        (p_2d/1e3,  'Presión  p [kPa]',         pressure_cmap,20),
-        (phi_plot,  'Potencial Electrostático  Φ [V]', 'RdBu_r', 20),
-        (nz_2d/1e18, f'Impurezas C⁶⁺  n_z [10¹⁸ m⁻³]', impurity_cmap, 18),
-        (j_2d/1e6,  'Densidad de Corriente  j [MA/m²]', current_cmap, 20),
+        (n_2d/1e20, 'Density  n [10²⁰ m⁻³]', density_cmap, 20),
+        (T_2d,      'Temperature  Tᵢ [keV]',   temp_cmap,    20),
+        (p_2d/1e3,  'Pressure  p [kPa]',         pressure_cmap,20),
+        (phi_plot,  'Electrostatic Potential  Φ [V]', 'RdBu_r', 20),
+        (nz_2d/1e18, f'Impurities C⁶⁺  n_z [10¹⁸ m⁻³]', impurity_cmap, 18),
+        (j_2d/1e6,  'Current Density  j [MA/m²]', current_cmap, 20),
     ]
 
     for idx, (data, title, cmap, nlev) in enumerate(panels):
@@ -189,17 +189,17 @@ def plot_axial_contours(fvm_data, cfg, filename):
             beta_ax[i,j] = 2*cfg.mu0*p / B_t**2 * 100
 
     fig = plt.figure(figsize=(22, 15), facecolor=FACECOLOR)
-    fig.suptitle('SECCIONES AXIALES (Plano Medio Toroidal, Z = 0)',
+    fig.suptitle('AXIAL SECTIONS (Toroidal Midplane, Z = 0)',
                  fontsize=16, color='white', fontweight='300', y=0.98)
     gs = GridSpec(2, 3, figure=fig, hspace=0.28, wspace=0.25,
                   left=0.06, right=0.94, top=0.92, bottom=0.06)
 
     panels = [
-        (n_ax/1e20, 'Densidad  n [10²⁰ m⁻³]', density_cmap, 20),
-        (T_ax,      'Temperatura  Tᵢ [keV]',   temp_cmap,    20),
-        (Bt_ax,     'Campo Toroidal  B_φ [T]',  'cividis',    20),
-        (q_ax,      'Factor de Seguridad  q(ρ)','viridis',    16),
-        (nz_ax/1e18,f'Impurezas C⁶⁺  n_z [10¹⁸ m⁻³]',impurity_cmap,18),
+        (n_ax/1e20, 'Density  n [10²⁰ m⁻³]', density_cmap, 20),
+        (T_ax,      'Temperature  Tᵢ [keV]',   temp_cmap,    20),
+        (Bt_ax,     'Toroidal Field  B_φ [T]',  'cividis',    20),
+        (q_ax,      'Safety Factor  q(ρ)',      'viridis',    16),
+        (nz_ax/1e18,f'Impurities C⁶⁺  n_z [10¹⁸ m⁻³]',impurity_cmap,18),
         (beta_ax,   'Beta  β [%]',              pressure_cmap,20),
     ]
 
@@ -242,7 +242,7 @@ def plot_radial_profiles(fvm_data, j_phi, j_bs, cfg, filename):
     rho = fvm_data['rho']
 
     fig, axes = plt.subplots(2, 4, figsize=(24, 11), facecolor=FACECOLOR)
-    fig.suptitle('PERFILES RADIALES — Equilibrio, Transporte y Corriente',
+    fig.suptitle('RADIAL PROFILES — Equilibrium, Transport and Current',
                  fontsize=15, color='white', fontweight='300', y=0.97)
     for ax in axes.flat:
         _style_ax(ax, xlabel='ρ = r/a')
@@ -253,9 +253,9 @@ def plot_radial_profiles(fvm_data, j_phi, j_bs, cfg, filename):
     ax.plot(rho, fvm_data['n']/1e20, color='#4090ff', linewidth=2)
     n_init = np.array([density_profile(r, cfg.n0) for r in rho])
     ax.plot(rho, n_init/1e20, '--', color='#88aadd', linewidth=1, alpha=0.6,
-            label='Inicial')
+            label='Initial')
     ax.set_ylabel('n [10²⁰ m⁻³]', fontsize=9, color=LABEL_COL)
-    ax.set_title('Densidad', fontsize=11, color=TITLE_COL)
+    ax.set_title('Density', fontsize=11, color=TITLE_COL)
     ax.legend(fontsize=8, facecolor='#0e0e1a', edgecolor='#334455',
               labelcolor='#aabbcc')
 
@@ -265,7 +265,7 @@ def plot_radial_profiles(fvm_data, j_phi, j_bs, cfg, filename):
     ax.plot(rho, fvm_data['Ti'], color='#ff6b4a', linewidth=2, label='Tᵢ')
     ax.plot(rho, fvm_data['Te'], color='#ffaa44', linewidth=1.5, label='Tₑ')
     ax.set_ylabel('T [keV]', fontsize=9, color=LABEL_COL)
-    ax.set_title('Temperatura', fontsize=11, color=TITLE_COL)
+    ax.set_title('Temperature', fontsize=11, color=TITLE_COL)
     ax.legend(fontsize=8, facecolor='#0e0e1a', edgecolor='#334455',
               labelcolor='#aabbcc')
 
@@ -279,7 +279,7 @@ def plot_radial_profiles(fvm_data, j_phi, j_bs, cfg, filename):
     ax.text(0.05, 1.05, 'q=1 (sawteeth)', fontsize=7, color='#ff6666',
             alpha=0.7)
     ax.set_ylabel('q', fontsize=9, color=LABEL_COL)
-    ax.set_title('Factor de Seguridad', fontsize=11, color=TITLE_COL)
+    ax.set_title('Safety Factor', fontsize=11, color=TITLE_COL)
 
     # 4. Pressure
     ax = axes[0,3]
@@ -287,18 +287,18 @@ def plot_radial_profiles(fvm_data, j_phi, j_bs, cfg, filename):
     ax.fill_between(rho, p_arr, alpha=0.3, color='#b48eff')
     ax.plot(rho, p_arr, color='#b48eff', linewidth=2)
     ax.set_ylabel('p [kPa]', fontsize=9, color=LABEL_COL)
-    ax.set_title('Presión', fontsize=11, color=TITLE_COL)
+    ax.set_title('Pressure', fontsize=11, color=TITLE_COL)
 
     # 5. Transport
     ax = axes[1,0]
     ax.semilogy(rho[1:], fvm_data['D_cl'][1:], color='#4090ff', lw=1.5,
-                label='D_clásico')
+                label='D_classical')
     ax.semilogy(rho[1:], fvm_data['D_neo'][1:], color='#ff6b4a', lw=1.5,
-                label='D_neoclásico')
+                label='D_neoclassical')
     ax.semilogy(rho[1:], fvm_data['chi_n'][1:], color='#00e5a0', lw=2,
                 label='D_total')
     ax.set_ylabel('D [m²/s]', fontsize=9, color=LABEL_COL)
-    ax.set_title('Coeficientes de Difusión', fontsize=11, color=TITLE_COL)
+    ax.set_title('Diffusion Coefficients', fontsize=11, color=TITLE_COL)
     ax.legend(fontsize=7, facecolor='#0e0e1a', edgecolor='#334455',
               labelcolor='#aabbcc')
     ax.set_ylim(1e-4, 1e2)
@@ -309,7 +309,7 @@ def plot_radial_profiles(fvm_data, j_phi, j_bs, cfg, filename):
     ax.plot(rho, fvm_data['n_z']/1e18, color='#ffd53e', lw=2,
             label=f'C⁶⁺ (Z={cfg.Z_imp})')
     ax.set_ylabel('n_z [10¹⁸ m⁻³]', fontsize=9, color=LABEL_COL)
-    ax.set_title(f'Impurezas (Z={cfg.Z_imp})', fontsize=11, color=TITLE_COL)
+    ax.set_title(f'Impurities (Z={cfg.Z_imp})', fontsize=11, color=TITLE_COL)
     ax.legend(fontsize=8, facecolor='#0e0e1a', edgecolor='#334455',
               labelcolor='#aabbcc')
 
@@ -321,7 +321,7 @@ def plot_radial_profiles(fvm_data, j_phi, j_bs, cfg, filename):
             label='j_total')
     ax.fill_between(rho, (j_phi+j_bs)/1e6, alpha=0.15, color='#33aabb')
     ax.set_ylabel('j [MA/m²]', fontsize=9, color=LABEL_COL)
-    ax.set_title('Densidad de Corriente', fontsize=11, color=TITLE_COL)
+    ax.set_title('Current Density', fontsize=11, color=TITLE_COL)
     ax.legend(fontsize=7, facecolor='#0e0e1a', edgecolor='#334455',
               labelcolor='#aabbcc')
 
@@ -332,7 +332,7 @@ def plot_radial_profiles(fvm_data, j_phi, j_bs, cfg, filename):
     for k, nh in enumerate(n_hist):
         ax.plot(rho, nh/1e20, color=colors[k], linewidth=0.8, alpha=0.7)
     ax.set_ylabel('n [10²⁰ m⁻³]', fontsize=9, color=LABEL_COL)
-    ax.set_title('Evolución Temporal de n(ρ)', fontsize=11, color=TITLE_COL)
+    ax.set_title('Time Evolution of n(ρ)', fontsize=11, color=TITLE_COL)
     sm = plt.cm.ScalarMappable(cmap='cool',
                                norm=plt.Normalize(0, cfg.Nt_fvm*cfg.dt_fvm*1e3))
     cb = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
@@ -356,7 +356,7 @@ def plot_particle_orbits(rho_hist, theta_hist, phi_hist, cfg, filename):
     print("  [PLOT] Generating particle orbit projections...")
 
     fig = plt.figure(figsize=(22, 10), facecolor=FACECOLOR)
-    fig.suptitle('ÓRBITAS DE PARTÍCULAS — Proyecciones del Centro de Giro',
+    fig.suptitle('PARTICLE ORBITS — Guiding Center Projections',
                  fontsize=15, color='white', fontweight='300', y=0.97)
     gs = GridSpec(1, 3, figure=fig, wspace=0.25,
                   left=0.06, right=0.96, top=0.88, bottom=0.08)
@@ -379,7 +379,7 @@ def plot_particle_orbits(rho_hist, theta_hist, phi_hist, cfg, filename):
         col = '#ff6b4a' if 0.3 < rho0 < 0.7 else '#4090ff'
         al  = 0.5 if 0.3 < rho0 < 0.7 else 0.35
         ax1.plot(R_o, Z_o, color=col, lw=0.4, alpha=al)
-    ax1.set_title('Proyección Poloidal (R, Z)', fontsize=11, color=TITLE_COL)
+    ax1.set_title('Poloidal Projection (R, Z)', fontsize=11, color=TITLE_COL)
     ax1.set_xlabel('R [m]', fontsize=9, color=LABEL_COL)
     ax1.set_ylabel('Z [m]', fontsize=9, color=LABEL_COL)
     ax1.tick_params(labelsize=7, colors=TICK_COL)
@@ -399,7 +399,7 @@ def plot_particle_orbits(rho_hist, theta_hist, phi_hist, cfg, filename):
         Y_o = R_o*np.sin(phi_hist[i,:Nsnap])
         col = '#ff6b4a' if 0.3 < rho_hist[i,0] < 0.7 else '#4090ff'
         ax2.plot(X_o, Y_o, color=col, lw=0.3, alpha=0.3)
-    ax2.set_title('Proyección Toroidal (X, Y)', fontsize=11, color=TITLE_COL)
+    ax2.set_title('Toroidal Projection (X, Y)', fontsize=11, color=TITLE_COL)
     ax2.set_xlabel('X [m]', fontsize=9, color=LABEL_COL)
     ax2.set_ylabel('Y [m]', fontsize=9, color=LABEL_COL)
     ax2.tick_params(labelsize=7, colors=TICK_COL)
@@ -415,7 +415,7 @@ def plot_particle_orbits(rho_hist, theta_hist, phi_hist, cfg, filename):
     theta_c = np.linspace(0, 2*np.pi, 100)
     for rr in np.arange(0.2, 1.01, 0.2):
         ax3.plot(theta_c, np.full_like(theta_c, rr), 'w-', lw=0.3, alpha=0.15)
-    ax3.set_title('Espacio de Fases (ρ, θ)', fontsize=11, color=TITLE_COL,
+    ax3.set_title('Phase Space (ρ, θ)', fontsize=11, color=TITLE_COL,
                   pad=15)
     ax3.tick_params(labelsize=7, colors=TICK_COL)
     ax3.set_rmax(1.0)
@@ -438,7 +438,7 @@ def plot_multiple_toroidal_sections(fvm_data, cfg, filename):
     phi_sections = np.linspace(0, 2*np.pi, Nsec, endpoint=False)
 
     fig = plt.figure(figsize=(24, 12), facecolor=FACECOLOR)
-    fig.suptitle(f'SECCIONES TOROIDALES — Temperatura Tᵢ [keV] en {Nsec} cortes',
+    fig.suptitle(f'TOROIDAL SECTIONS — Ion Temperature Tᵢ [keV] at {Nsec} cuts',
                  fontsize=15, color='white', fontweight='300', y=0.97)
     nrows, ncols = 2, Nsec // 2
     rho = fvm_data['rho']
@@ -508,21 +508,21 @@ def plot_transport_hierarchy(fvm_data, cfg, filename):
         Gamma_total[i] = -D_total[i]*dn_dr
 
     fig, axes = plt.subplots(1, 3, figsize=(22, 7), facecolor=FACECOLOR)
-    fig.suptitle('JERARQUÍA DE TRANSPORTE: Γ_Banana >> Γ_PS >> Γ_Clásico',
+    fig.suptitle('TRANSPORT HIERARCHY: Γ_Banana >> Γ_PS >> Γ_Classical',
                  fontsize=15, color='white', fontweight='300', y=0.97)
     for ax in axes:
         _style_ax(ax, xlabel='ρ = r/a')
 
     # Panel 1
     ax = axes[0]
-    ax.semilogy(rho[2:], D_cl[2:], color='#4090ff', lw=2, label='D_clásico')
-    ax.semilogy(rho[2:], D_neo[2:], color='#ff6b4a', lw=2, label='D_neoclásico')
+    ax.semilogy(rho[2:], D_cl[2:], color='#4090ff', lw=2, label='D_classical')
+    ax.semilogy(rho[2:], D_neo[2:], color='#ff6b4a', lw=2, label='D_neoclassical')
     ax.semilogy(rho[2:], D_total[2:], color='#00e5a0', lw=2.5,
-                label='D_total (+ anómalo)')
+                label='D_total (+ anomalous)')
     ax.fill_between(rho[2:], D_cl[2:], D_neo[2:], alpha=0.1, color='#ff6b4a')
     ax.fill_between(rho[2:], D_neo[2:], D_total[2:], alpha=0.1, color='#00e5a0')
     ax.set_ylabel('D [m²/s]', fontsize=10, color=LABEL_COL)
-    ax.set_title('Coeficientes de Difusión', fontsize=12, color=TITLE_COL)
+    ax.set_title('Diffusion Coefficients', fontsize=12, color=TITLE_COL)
     ax.legend(fontsize=9, facecolor='#0e0e1a', edgecolor='#334455',
               labelcolor='#aabbcc')
     ax.set_ylim(1e-4, 1e2)
@@ -530,14 +530,14 @@ def plot_transport_hierarchy(fvm_data, cfg, filename):
     # Panel 2
     ax = axes[1]
     ax.plot(rho[2:-2], np.abs(Gamma_cl[2:-2]), color='#4090ff', lw=2,
-            label='|Γ_clásico|')
+            label='|Γ_classical|')
     ax.plot(rho[2:-2], np.abs(Gamma_neo[2:-2]), color='#ff6b4a', lw=2,
-            label='|Γ_neoclásico|')
+            label='|Γ_neoclassical|')
     ax.plot(rho[2:-2], np.abs(Gamma_total[2:-2]), color='#00e5a0', lw=2.5,
             label='|Γ_total|')
     ax.set_yscale('log')
     ax.set_ylabel('|Γ| [m⁻² s⁻¹]', fontsize=10, color=LABEL_COL)
-    ax.set_title('Flujos de Partículas', fontsize=12, color=TITLE_COL)
+    ax.set_title('Particle Fluxes', fontsize=12, color=TITLE_COL)
     ax.legend(fontsize=9, facecolor='#0e0e1a', edgecolor='#334455',
               labelcolor='#aabbcc')
 
@@ -559,9 +559,9 @@ def plot_transport_hierarchy(fvm_data, cfg, filename):
     ax.text(0.5, 3, 'Pfirsch-Schlüter', fontsize=8, color='#6688aa',
             ha='center')
     ax.text(0.5, 40, 'Banana', fontsize=8, color='#ff8866', ha='center')
-    ax.text(0.5, 500, 'Anómalo', fontsize=8, color='#44cc88', ha='center')
-    ax.set_ylabel('D / D_clásico', fontsize=10, color=LABEL_COL)
-    ax.set_title('Factor de Amplificación', fontsize=12, color=TITLE_COL)
+    ax.text(0.5, 500, 'Anomalous', fontsize=8, color='#44cc88', ha='center')
+    ax.set_ylabel('D / D_classical', fontsize=10, color=LABEL_COL)
+    ax.set_title('Amplification Factor', fontsize=12, color=TITLE_COL)
     ax.legend(fontsize=9, facecolor='#0e0e1a', edgecolor='#334455',
               labelcolor='#aabbcc')
 
